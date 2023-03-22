@@ -2128,22 +2128,6 @@ namespace AssetStudioGUI
 
                 name = input;
             }
-            else
-            {
-                Logger.Error("CABMap name is empty, please enter any name in ComboBox above");
-                InvokeUpdate(miscToolStripMenuItem, true);
-                return;
-            }
-
-            if (File.Exists(Path.Combine(AssetsHelper.CABMapName, $"{name}.bin")))
-            {
-                var acceptOverride = MessageBox.Show("CABMap already exist, Do you want to override it ?", "Warning", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-                if (acceptOverride != DialogResult.Yes)
-                {
-                    InvokeUpdate(miscToolStripMenuItem, true);
-                    return;
-                }
-            }
 
             var openFolderDialog = new OpenFolderDialog();
             openFolderDialog.Title = "Select Game Folder";

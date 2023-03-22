@@ -6,6 +6,9 @@ using System.Threading;
 using System.Globalization;
 using System.Xml.Linq;
 using System.Text.RegularExpressions;
+using System.Reflection;
+using System.Text;
+using Newtonsoft.Json;
 
 namespace AssetStudio
 {
@@ -27,6 +30,76 @@ namespace AssetStudio
             return files.Select(x => Path.GetFileNameWithoutExtension(x)).ToArray();
         }
 
+        public class NMBundleFile
+        {
+            public string bundleName;
+            public string fileName;
+            public string cabName;
+            public Dictionary<long, NMAssetObject> objDict;
+            public List<string> depList;
+        }
+
+        public class NMAssetObject
+        {
+            public long pathID;
+            public string name;
+            public string classType;
+            public long byteSize;
+            public string objInfo;
+        }
+        public static string GetObjectName(AssetStudio.Object obj)
+        {
+            if (obj is Shader)
+            {
+                Shader s = obj as Shader;
+                return s.m_ParsedForm.m_Name;
+            }
+            else
+            {
+                Type t = obj.GetType();
+                TypeInfo tf = t.GetTypeInfo();
+                var fd = tf.GetField("m_Name");
+                if (fd != null)
+                {
+                    return fd.GetValue(obj).ToString();
+                }
+            }
+
+
+            return "";
+        }
+
+        public static string GetObjectClassType(AssetStudio.Object obj)
+        {
+            if (obj is MonoBehaviour)
+            {
+                var asset = obj as MonoBehaviour;
+                if (!asset.m_Script.IsNull && asset.assetsFile.ObjectsDic.ContainsKey(asset.m_Script.m_PathID))
+                {
+                    var scriptObj = asset.assetsFile.ObjectsDic[asset.m_Script.m_PathID];
+                    if (scriptObj is MonoScript)
+                    {
+                        MonoScript mo = scriptObj as MonoScript;
+                        return string.Format("{0} ({1}.{2})", obj.type.ToString(), mo.m_Namespace, mo.m_ClassName);
+                    }
+                }
+            }
+            else if (obj is MonoScript)
+            {
+                MonoScript mo = obj as MonoScript;
+                return string.Format("{0} ({1}.{2})", obj.type.ToString(), mo.m_Namespace, mo.m_ClassName);
+            }
+
+
+            return obj.type.ToString();
+        }
+
+        public class NMBundleInfo
+        {
+            public string bundleName;
+            public List<NMBundleFile> bundleFileList;
+        }
+
         public static void BuildCABMap(string[] files, string mapName)
         {
             Logger.Info($"Processing...");
@@ -34,50 +107,148 @@ namespace AssetStudio
             {
                 CABMap.Clear();
                 var collision = 0;
-                for (int i = 0; i < files.Length; i++)
-                {
-                    var file = files[i];
-                    assetsManager.LoadFiles(file);
+                Dictionary<string, NMBundleInfo> result = new Dictionary<string, NMBundleInfo>();
+                assetsManager.SkipProcess = false;
+                    assetsManager.LoadFiles(files);
+
                     if (assetsManager.assetsFileList.Count > 0)
                     {
                         foreach (var assetsFile in assetsManager.assetsFileList)
                         {
-                            if (tokenSource.IsCancellationRequested)
-                            {
-                                Logger.Info("Building CABMap has been aborted !!");
-                                return;
-                            }
-                            var dependencies = assetsFile.m_Externals.Select(x => x.fileName).ToArray();
 
-                            if (CABMap.ContainsKey(assetsFile.fileName))
+                            NMBundleFile bundleFile = new NMBundleFile();
+                            bundleFile.fileName = assetsFile.originalPath;
+                            bundleFile.objDict = new Dictionary<long, NMAssetObject>();
+                            bundleFile.depList = new List<string>();
+                            bundleFile.bundleName = assetsFile.fileName;
+                            bundleFile.cabName = assetsFile.fileName;
+
+                            if (assetsFile.Objects.Count>0)
                             {
-                                collision++;
-                                continue;
+                                int n = 0;
+                                foreach (AssetStudio.Object asset in assetsFile.Objects)
+                                {
+                                    switch (asset)
+                                    {
+                                        case AssetBundle bundle: //这个是添加在deps部分
+                                        {
+                                                bundleFile.bundleName = bundle.m_AssetBundleName;
+                                                bundleFile.depList.AddRange(bundle.m_Dependencies);
+                                            }
+                                            break;
+                                        default: //这个是添加在objs部分
+                                            {
+                                                if (asset is Transform || asset is AssetBundle)
+                                                {
+                                                    continue;
+                                                }
+                                                if (asset is GameObject)
+                                                {
+                                                    GameObject obj = asset as GameObject;
+                                                    if (!obj.m_Transform.m_Father.IsNull)
+                                                    {
+                                                        continue;
+                                                    }
+                                                }
+                                                if (!bundleFile.objDict.ContainsKey(asset.m_PathID))
+                                                {
+                                                    NMAssetObject assetObj = new NMAssetObject();
+                                                    assetObj.pathID = asset.m_PathID;
+                                                    assetObj.name = GetObjectName(asset);
+                                                    assetObj.classType = GetObjectClassType(asset);
+                                                    assetObj.byteSize = asset.byteSize;
+                                                    assetObj.objInfo = null;
+                                                    if (asset is Texture2D)
+                                                    {
+                                                        Texture2D texture = asset as Texture2D;
+                                                        assetObj.objInfo = $"width: {texture.m_Width} height: {texture.m_Height} format: {texture.m_TextureFormat}";
+                                                    }
+                                                    else if (asset is Mesh)
+                                                    {
+                                                        Mesh mesh = asset as Mesh;
+                                                        assetObj.objInfo = $"vertices num: {mesh.m_VertexCount} triangle num: {mesh.m_Indices.Count / 3}";
+                                                    }
+                                                    else
+                                                    {
+                                                        assetObj.objInfo = asset.GetType().Name;
+                                                    }
+                                                    bundleFile.objDict.Add(asset.m_PathID, assetObj);
+                                                }
+                                            }
+                                            break;
+                                    }
+                                }
+
+
+                                if (bundleFile.bundleName != null)
+                                {
+                                    NMBundleInfo info = null;
+                                    if (!result.TryGetValue(bundleFile.bundleName, out info))
+                                    {
+                                        info = new NMBundleInfo();
+                                        info.bundleName = bundleFile.bundleName;
+                                        info.bundleFileList = new List<NMBundleFile>();
+                                        result.Add(info.bundleName, info);
+                                    }
+                                    info.bundleFileList.Add(bundleFile);
+                                }
                             }
-                            CABMap.Add(assetsFile.fileName, file);
                         }
-                        Logger.Info($"Processed {Path.GetFileName(file)}");
-                    }
-                    assetsManager.Clear();
+
+                        // log
+                        StringBuilder str = new StringBuilder();
+                        int num = 0;
+                        foreach (var bundleInfo in result)
+                        {
+                            str.AppendFormat("{0}. {1}", ++num, bundleInfo.Key);
+                            str.AppendLine();
+
+                            foreach (var bundleFile in bundleInfo.Value.bundleFileList)
+                            {
+                                str.AppendFormat("{0}", bundleFile.fileName);
+                                str.AppendLine();
+                                str.AppendFormat("{0}", bundleFile.cabName);
+                                str.AppendLine();
+                                if (bundleFile.objDict.Count> 0)
+                                {
+                                    str.AppendLine("  objs:");
+                                    List<NMAssetObject> objList = new List<NMAssetObject>();
+                                    foreach (var item in bundleFile.objDict)
+                                    {
+                                        objList.Add(item.Value);
+                                    }
+                                    objList.Sort((a, b) =>
+                                    {
+                                        return a.classType.CompareTo(b.classType);
+                                    });
+
+                                    foreach (var item in objList)
+                                    {
+                                        str.AppendFormat("    {0} : {1} : {2} : {3} : {4}\n", item.pathID, item.name, item.classType, item.byteSize, !string.IsNullOrEmpty(item.objInfo) ? item.objInfo : "");
+                                    }
+
+                                    if (bundleFile.depList.Count > 0)
+                                    {
+                                        str.AppendLine("  deps:");
+                                        foreach (var item in bundleFile.depList)
+                                        {
+                                            str.AppendFormat("    {0}", item);
+                                            str.AppendLine();
+                                        }
+                                    }
+                                }
+
+                            }
+                            str.AppendLine();
+                        }
+                        File.WriteAllText(@"G:\zhushenzhizhan\123.log", str.ToString());
+                        // json log
+                        string jsonStr = JsonConvert.SerializeObject(result, Formatting.Indented);
+                        File.WriteAllText(@"G:\zhushenzhizhan\123.json", jsonStr);
+
                 }
+                Logger.Info("Done");
 
-                CABMap = CABMap.OrderBy(pair => pair.Key).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
-                var outputFile = Path.Combine(CABMapName, $"{mapName}.bin");
-
-                Directory.CreateDirectory(Path.GetDirectoryName(outputFile));
-
-                using (var binaryFile = File.OpenWrite(outputFile))
-                using (var writer = new BinaryWriter(binaryFile))
-                {
-                    writer.Write(CABMap.Count);
-                    foreach (var kv in CABMap)
-                    {
-                        writer.Write(kv.Key);
-                        writer.Write(kv.Value);
-                    }
-                }
-
-                Logger.Info($"CABMap build successfully !! {collision} collisions found");
             }
             catch (Exception e)
             {

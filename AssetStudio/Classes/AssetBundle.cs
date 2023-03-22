@@ -23,6 +23,18 @@ namespace AssetStudio
     {
         public PPtr<Object>[] m_PreloadTable;
         public KeyValuePair<string, AssetInfo>[] m_Container;
+        public AssetInfo m_MainAsset;
+        public uint m_RuntimeComaptability;
+        public string m_AssetBundleName;
+        public int m_DependencyCount;
+        public string[] m_Dependencies;
+        public bool m_IsStreamedScenessetBundle;
+        public int m_ExplicitDataLayout;
+        public int m_PathFlags;
+        public int m_SceneHashCount;
+        public KeyValuePair<string, string>[] m_SceneHashes;
+
+        public static bool Exportable;
 
         public AssetBundle(ObjectReader reader) : base(reader)
         {
@@ -38,6 +50,27 @@ namespace AssetStudio
             for (int i = 0; i < m_ContainerSize; i++)
             {
                 m_Container[i] = new KeyValuePair<string, AssetInfo>(reader.ReadAlignedString(), new AssetInfo(reader));
+            }
+
+            m_MainAsset = new AssetInfo(reader);
+            m_RuntimeComaptability = reader.ReadUInt32();
+            m_AssetBundleName = reader.ReadAlignedString();
+            m_DependencyCount = reader.ReadInt32();
+            m_Dependencies = new string[m_DependencyCount];
+            for (int k = 0; k < m_DependencyCount; k++)
+            {
+                m_Dependencies[k] = reader.ReadAlignedString();
+            }
+            reader.AlignStream();
+            m_IsStreamedScenessetBundle = reader.ReadBoolean();
+            reader.AlignStream();
+            m_ExplicitDataLayout = reader.ReadInt32();
+            m_PathFlags = reader.ReadInt32();
+            m_SceneHashCount = reader.ReadInt32();
+            m_SceneHashes = new KeyValuePair<string, string>[m_SceneHashCount];
+            for (int l = 0; l < m_SceneHashCount; l++)
+            {
+                m_SceneHashes[l] = new KeyValuePair<string, string>(reader.ReadAlignedString(), reader.ReadAlignedString());
             }
         }
     }
